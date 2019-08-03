@@ -12,8 +12,8 @@ function chidot = state_costate_reduced_dynamics(t,chi,m,u_func,params)
     %% Unpack
     
     mu = params.mu;
-    amax = params.amax;
-    c = params.c;
+    amax = params.amax; % nondim
+    c = params.c; % nondim
     L_EM = params.L_EM;
     T_EM = params.T_EM;
     

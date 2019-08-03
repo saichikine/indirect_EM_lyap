@@ -12,8 +12,8 @@ function chidot = state_costate_full_dynamics(t,chi,u_func,params)
     %% Unpack
     
     mu = params.mu;
-    Tmax = params.Tmax;
-    c = params.c;
+    Tmax = params.Tmax; % nondim
+    c = params.c; % nondim
     L_EM = params.L_EM;
     T_EM = params.T_EM;
     
@@ -69,9 +69,9 @@ function chidot = state_costate_full_dynamics(t,chi,u_func,params)
     u = u_func(chi,params);
     %fprintf("u = %d\n",u);
     
-    %control_accel = -lambdaVhat*u*Tmax/m/params.accel_norm;
+    control_accel = -lambdaVhat*u*Tmax/m;
     %control_accel = -lambdaVhat*u*params.amax*m/params.m0;
-    control_accel = -lambdaVhat*u*params.amax*params.m0/m;
+    %control_accel = -lambdaVhat*u*params.amax*params.m0/m;
     %fprintf("Magnitude of control accel is: %d\n",norm(control_accel));
     
     %u = 0;
@@ -85,9 +85,9 @@ function chidot = state_costate_full_dynamics(t,chi,u_func,params)
     
     chidot(8:10) = -G'*lambdaV;
     chidot(11:13) = -lambdaR - H'*lambdaV;
-    %chidot(14) = -norm(lambdaV)*u*Tmax/m^2;
+    chidot(14) = -norm(lambdaV)*u*Tmax/m^2;
     %chidot(14) = -norm(lambdaV)*u*params.amax*m/params.m0/m;
-    chidot(14) = -norm(lambdaV)*u*params.amax*params.m0/m^2;
+    %chidot(14) = -norm(lambdaV)*u*params.amax*params.m0/m^2;
     %chidot(14) = -norm(lambdaV)*u*Tmax/(m/params.m0)^2;
     
     if any(isnan(chidot))

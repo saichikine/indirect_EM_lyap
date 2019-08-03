@@ -4,48 +4,17 @@
 
 %% let there be light
 clear; close all; clc;
-parpool = gcp; % starts parallel pool if one is not currently open
+set(groot,'defaultLineLineWidth', 1.5)
+set(groot,'defaultAxesFontSize', 16)
+set(groot,'defaulttextinterpreter','latex');  
+set(groot, 'defaultAxesTickLabelInterpreter','latex');  
+set(groot, 'defaultLegendInterpreter','latex');
+p = gcp;
 
-%% Setup
+%% Load (setup)
+load('environment_EM_spacecraft_smallsat.mat');
 
-earth = celestial_body;
-earth.radius = 6378.13643; % [km]
-earth.mu = 3.986e5; % [km^3/s^2]
- 
-moon = celestial_body;
-moon.radius = 1738; % [km]
-moon.mu = 4902.799; % [km^3/s^2]
-
-sun = celestial_body;
-sun.radius = 696000; % [km]
-sun.mu = 1.327e11; % [km^3/s^2]
-G = 6.67408e-20;
-%m_norm = (moon.mu + earth.mu)/G;
-mu_EM = moon.mu/(moon.mu + earth.mu);
-mu_SE = earth.mu/(earth.mu + sun.mu);
-
-L_EM = 384400; % [km], Earth-Moon distance
-L_SE = 149598023; % [km], Sun-Earth distance
-
-L_points = lagrangePoints(mu_EM);
-x_L1 = L_points(1,1);
-x_L2 = L_points(1,2);
-
-T_EM = 2*pi*sqrt(L_EM^3/(moon.mu+earth.mu));
-
-% Spacecraft params
-m_sc = 200; % 200kg
-D_sc = 1.6; % 1.2m diameter
-Tmax = 0.500; % newtons
-exh_vel = 25000; % m/s
-
-% Normalization stuff (divide by these to get normalized versions)
-vel_norm = 1000*L_EM/T_EM*(2*pi);
-m_primaries = (moon.mu + earth.mu)/G;
-m_norm = m_sc;
-force_norm = m_primaries*1000*L_EM*(T_EM/(2*pi))^2;
-accel_norm = 1000*L_EM/(T_EM/(2*pi))^2;
-time_norm = T_EM/(2*pi);
+%%
 
 % ODE tolerances
 ode_opts = odeset('RelTol',1e-13,'AbsTol',1e-20);
@@ -123,14 +92,14 @@ legend('FontSize',12);
 l = 6; % number of states
 R = 2*eye(3);
 A_func = @(X) Jacobian(X,mu_EM); % A matrix depends on state (time varying)
-B = [zeros(3,3); 10*Tmax/m_sc/accel_norm*eye(3)]; %dfdu
+B = [zeros(3,3); 47*max_thrust_mag/m_sc*eye(3)]; %dfdu
 augSTM_0 = eye(12,12);
 
 X_ref = X0;
 Xlarge0 = [X_ref; reshape(augSTM_0,[],1)];
 deltaX0 = X_ref - connection_result.traj{2}(:,index_start);
 
-ode_opts = odeset('RelTol',3e-14,'AbsTol',1e-22);
+%ode_opts = odeset('RelTol',3e-14,'AbsTol',1e-22);
 %[~, Xlarge_loop_hist] = ode113(@(t,Xlarge) CR3BP_costate_STM_dynamics(t,Xlarge,B,R,mu_EM), [t0, t0+cf_guess*tfmin0], Xlarge0, ode_opts);
 [~, Xlarge_loop_hist] = ode113(@(t,Xlarge) CR3BP_costate_STM_dynamics(t,Xlarge,B,R,mu_EM), ...
     [t0, t0+cf_guess*tfmin0], [X_ref; reshape(eye(12),[],1)], ode_opts);
@@ -144,9 +113,10 @@ lambda0 = STM_t(1:6,7:12)\(deltaXf - STM_t(1:6,1:6)*deltaX0);
 %% Test initial guess for lambda0
 
 m0 = m_sc;
-amax = Tmax/m_sc/accel_norm;
+Tmax = max_thrust_mag;
+amax = max_thrust_mag/m_sc;
 
-params_accel = struct('m_norm',m_norm, 'c',exh_vel, 'mu',mu_EM, 'amax',amax, 'L_EM',L_EM, 'T_EM',T_EM, 'force_norm',force_norm, 'vel_norm',vel_norm, 'accel_norm', accel_norm);
+params_accel = struct('m_norm',MU, 'c',exh_vel, 'mu',mu_EM, 'amax',amax, 'Tmax',max_thrust_mag,'L_EM',L_EM, 'T_EM',T_EM, 'force_norm',FU, 'vel_norm',VU, 'accel_norm', AU);
 
 chi0 = [X0; lambda0];
 fprintf("Controlled trajectory with guess for lambda0\n")
@@ -175,103 +145,23 @@ legend('FontSize',12);
 hold off
 %% Correct into nonlinear model (without mass)
 
-%cfr = 1;
-cfr = 0.9305;
+cfr = 1;
+%cfr = 0.9305;
 tfmin = tf-t0;
 tf0 = tf-t0;
 lambda_i = lambda0;
 free_vars = lambda_i;
 
-is_converged = 0;
-ss_tol = 1e-10;
+shooting_func_min_energy_reduced_simple = @(free_vars) shooting_func_min_energy_reduced(0,free_vars,X0,m0,Xf,cfr*tfmin,params_accel);
 
-shooting_func_min_energy_reduced_simple = @(T,free_vars) shooting_func_min_energy_reduced(T,free_vars,X0,m0,Xf,cfr*tfmin,params_accel);
-T = 0;
+min_energy_reduced_result = shooter(free_vars,shooting_func_min_energy_reduced_simple,'tol',1e-10,'max_iter',5000);
 
-Wk = shooting_func_min_energy_reduced_simple(T,free_vars);
-err_mag = norm(Wk);
-if err_mag <= ss_tol
-    is_converged = 1;
-end
-
-gamma_vec = linspace(0,1.5,30);
-err_mag_old = err_mag;
-err_mag_hist = [err_mag];
-
-% Single shooting loop
-counter = 0;
-verbose_flag = 1;
-clc
-fprintf("\nCorrecting into reduced model.\n");
-tic
-while ~is_converged
-    
-    if verbose_flag
-        fprintf("Iteration %i\nCurrent residual magnitude is: %d\n",counter,err_mag);
-    end
-    
-    dWkdltk = NaN(6,6);
-    parfor i = 1:size(dWkdltk,2)
-        warning off;
-        % perturb ith element of free variable vector
-        delta_vars_i = free_vars(i)*(1e-10) + 1e-10;
-        delta_free_vars = free_vars;
-        delta_free_vars(i) = free_vars(i) + delta_vars_i;
-        
-        dWkdltk(:,i) = (shooting_func_min_energy_reduced_simple(T,delta_free_vars) - Wk)/delta_vars_i;
-    end
-    
-    if det(dWkdltk)==0
-        error("Jacobian not invertible.")
-    end
-    
-    % Check which multiplicative factor gamma gives best result
-    err_mag_vec = NaN(1,length(gamma_vec));
-    Wktest = Wk;
-    parfor c = 1:length(gamma_vec)
-        warning off;
-        update_free_vars = dWkdltk\(-gamma_vec(c)*Wk);
-        %update_free_vars = -inv(dWkdltk)*gamma_vec(c)*(Wk);
-        free_vars_test = free_vars + update_free_vars;
-
-        Wktest = shooting_func_min_energy_reduced_simple(T,free_vars_test);
-        err_mag = norm(Wktest);
-        err_mag_vec(c) = err_mag;
-    end
-    
-    min_gamma_index = find(err_mag_vec == min(err_mag_vec));
-    err_mag = err_mag_vec(min_gamma_index);
-    if err_mag >= err_mag_old
-        err_mag_hist = [err_mag_hist, err_mag_old];
-        fprintf("Residual did not decrease. Terminating with a final residual of %d.\n", err_mag_old)
-        break
-    else
-        err_mag_old = err_mag;
-    end
-    
-    gamma = gamma_vec(min_gamma_index);
-    
-    %update_free_vars = -inv(dWkdltk)*gamma*Wk;
-    update_free_vars = dWkdltk\(-gamma*Wk);
-    free_vars = free_vars + update_free_vars;
-    Wk = shooting_func_min_energy_reduced_simple(T,free_vars);
-    err_mag = norm(Wk);
-    err_mag_hist = [err_mag_hist, err_mag];
-    
-    if err_mag <= ss_tol
-        is_converged = 1;
-        fprintf("Converged, with a final error of %d\n", err_mag);
-    end
-    
-    counter = counter+1;
-end
-toc
-
-lambda0_masspre = free_vars;
-free_vars_converged_reduced = free_vars;
 
 %% Plot results from above
 
+free_vars_converged_reduced = min_energy_reduced_result.free_vars;
+lambda0_masspre = free_vars_converged_reduced;
+err_mag_hist = min_energy_reduced_result.err_hist;
 chi0 = [X0; free_vars_converged_reduced];
 fprintf("Controlled trajectory with corrected lambda0\n")
 tic
@@ -330,8 +220,8 @@ legend('FontSize',12)
 
 %% with mass
 
-%cff = 1;
-cff = 0.91; 
+cff = 1;
+%cff = 0.91; 
 tfmin = tf-t0;
 
 %Tmax = 0.32; % newtons
@@ -342,103 +232,23 @@ tf0 = tf-t0;
 lambda_i = [lambda0_masspre; 1e-6];
 free_vars = lambda_i;
 
-is_converged = 0;
-ss_tol = 1e-10;
+shooting_func_min_energy_simple = @(free_vars) shooting_func_min_energy(0,free_vars,X0,m0,Xf,cff*tfmin,params_accel);
 
-amax = Tmax/m_sc/accel_norm;
-params = struct('m0',m0, 'm_norm',m_norm, 'c',exh_vel, 'mu',mu_EM, 'amax',amax, 'Tmax',Tmax, 'L_EM',L_EM, 'T_EM',T_EM, 'force_norm',force_norm, 'vel_norm',vel_norm, 'accel_norm', accel_norm);
-shooting_func_min_energy_simple = @(T,free_vars) shooting_func_min_energy(T,free_vars,X0,m0,Xf,cff*tfmin,params);
-T = 0;
+min_energy_full_result = shooter(free_vars,shooting_func_min_energy_simple,'tol',1e-10,'max_iter',5000);
 
-Wk = shooting_func_min_energy_simple(T,free_vars);
-err_mag = norm(Wk);
-if err_mag <= ss_tol
-    is_converged = 1;
-end
 
-gamma_vec = linspace(0,1.5,50);
-err_mag_old = err_mag;
-err_mag_hist = [err_mag];
+%%
 
-% Single shooting loop
-counter = 0;
-verbose_flag = 1;
-clc
-fprintf("Correcting into full model.\n");
-tic
-while ~is_converged
-    
-    if verbose_flag
-        fprintf("Iteration %i\nCurrent residual magnitude is: %d\n",counter,err_mag);
-    end
-    
-    dWkdltk = NaN(7,7);
-    parfor i = 1:size(dWkdltk,2)
-        warning off;
-        % perturb ith element of free variable vector
-        delta_vars_i = free_vars(i)*(1e-10) + 1e-10;
-        delta_free_vars = free_vars;
-        delta_free_vars(i) = free_vars(i) + delta_vars_i;
-        
-        dWkdltk(:,i) = (shooting_func_min_energy_simple(T,delta_free_vars) - Wk)/delta_vars_i;
-    end
-    
-    if det(dWkdltk)==0
-        error("Jacobian not invertible.")
-    end
-    
-    % Check which multiplicative factor gamma gives best result
-    err_mag_vec = NaN(1,length(gamma_vec));
-    Wktest = Wk;
-    parfor c = 1:length(gamma_vec)
-        warning off;
-        update_free_vars = dWkdltk\(gamma_vec(c)*-Wk);
-        %update_free_vars = -inv(dWkdltk)*gamma_vec(c)*(Wk);
-        free_vars_test = free_vars + update_free_vars;
-
-        Wktest = shooting_func_min_energy_simple(T,free_vars_test);
-        err_mag = norm(Wktest);
-        err_mag_vec(c) = err_mag;
-    end
-    
-    min_gamma_index = find(err_mag_vec == min(err_mag_vec));
-    err_mag = err_mag_vec(min_gamma_index);
-    if err_mag >= err_mag_old
-        err_mag_hist = [err_mag_hist, err_mag_old];
-        fprintf("Residual did not decrease. Terminating with a final residual of %d.\n", err_mag_old)
-        break
-    else
-        err_mag_old = err_mag;
-    end
-    
-    gamma = gamma_vec(min_gamma_index);
-    
-    %update_free_vars = -inv(dWkdltk)*gamma*Wk;
-    update_free_vars = dWkdltk\(gamma*-Wk);
-    free_vars = free_vars + update_free_vars;
-    Wk = shooting_func_min_energy_simple(T,free_vars);
-    err_mag = norm(Wk);
-    err_mag_hist = [err_mag_hist, err_mag];
-    
-    if err_mag <= ss_tol
-        is_converged = 1;
-        fprintf("Converged, with a final error of %d\n", err_mag);
-    end
-    
-    counter = counter+1;
-end
-toc
-
-free_vars_converged_full = free_vars;
+free_vars_converged_full = min_energy_full_result.free_vars;
 %% Plot Results
 
 chi0 = [X0; m0; free_vars_converged_full];
 tic
-[t_opt_pass2, X_opt_pass2] = ode113(@(t,X) state_costate_full_dynamics(t,X,@opt_control_min_energy,params), [t0, t0+cff*tfmin], chi0, ode_opts);
+[t_opt_pass2, X_opt_pass2] = ode113(@(t,X) state_costate_full_dynamics(t,X,@opt_control_min_energy,params_accel), [t0, t0+cff*tfmin], chi0, ode_opts);
 toc
 
 % Compute control history
-final_control_results = get_control_hist_min_energy_full(X_opt_pass2,params.c);
+final_control_results = get_control_hist_min_energy_full(X_opt_pass2,params_accel.c);
 
 % figure
 % addToolbarExplorationButtons(gcf) % Adds buttons to figure toolbar
@@ -483,8 +293,8 @@ legend('FontSize',12);
 figure
 sgtitle('Control and Mass History','FontSize',14)
 subplot(1,2,1)
-plot(t_opt_pass2-t0, 1000*Tmax.*final_control_results.u_vec_hist(1,:), 'DisplayName', 'Thrust Vector (x component)'); hold on
-plot(t_opt_pass2-t0, 1000*Tmax.*final_control_results.u_vec_hist(2,:), 'DisplayName', 'Thrust Vector (y component)'); hold off
+plot(t_opt_pass2-t0, FU*1e6*Tmax.*final_control_results.u_vec_hist(1,:), 'DisplayName', 'Thrust Vector (x component) [mN]'); hold on
+plot(t_opt_pass2-t0, FU*1e6*Tmax.*final_control_results.u_vec_hist(2,:), 'DisplayName', 'Thrust Vector (y component) [mN]'); hold off
 title('Control Vector History','FontSize',12)
 xlabel('Time [non-dimensional units]','FontSize',12)
 ylabel('Control Vector Magnitude [milli-Newtons]','FontSize',12)
@@ -496,7 +306,7 @@ yyaxis left
 plot(t_opt_pass2-t0, final_control_results.u_hist, 'DisplayName', 'Thrust Factor');
 ylabel('Thrust Factor','FontSize',12)
 yyaxis right
-plot(t_opt_pass2-t0, X_opt_pass2(:,7), 'DisplayName', 'Spacecraft Mass');
+plot(t_opt_pass2-t0, MU*X_opt_pass2(:,7), 'DisplayName', 'Spacecraft Mass');
 ylabel('Mass [kg]','FontSize',12)
 xlabel('Time [non-dimensional units]','FontSize',12)
 title('Thrust Factor and Spacecract Mass vs Time','FontSize',12)
@@ -514,10 +324,10 @@ title('Residual Magnitude vs Iteration Number','FontSize',14)
 grid on
 legend('FontSize',12)
 
-max_thrust_used = 1000*max(Tmax.*final_control_results.u_hist); % [mN]
-total_deltav = trapz(time_norm.*t_opt_pass2,Tmax/m_sc.*final_control_results.u_hist); % [m/s]
-fuel_used = 1000*(m_sc - X_opt_pass2(end,7)); % [g]
-final_mass = X_opt_pass2(end,7); % [kg]
+max_thrust_used = FU*1e6*max(Tmax.*final_control_results.u_hist); % [mN]
+total_deltav = trapz(TU.*t_opt_pass2,AU*Tmax/m_sc.*final_control_results.u_hist); % [m/s]
+fuel_used = MU*(m_sc - X_opt_pass2(end,7)); % [g]
+final_mass = MU*X_opt_pass2(end,7); % [kg]
 fprintf("Max Thrust Used: %d mN\n",max_thrust_used);
 fprintf("Total Delta V: %d m/s\n",total_deltav);
 fprintf("Fuel Mass Used: %d g\n",fuel_used);

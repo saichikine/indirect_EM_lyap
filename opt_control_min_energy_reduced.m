@@ -3,11 +3,11 @@ function u = opt_control_min_energy_reduced(chi,m,params)
     % chi is combined state and costate vector
     % c is exhaust velocity
     
-    c = params.c/params.vel_norm;
+    c = params.c; % nondim
     lambdaV = chi(10:12); % velocity costate
     lambdaV_mag = norm(lambdaV);
 
-    S = -lambdaV_mag*c/(m/params.m_norm) + 1; % switching function for min energy case
+    S = -lambdaV_mag*c/(m) + 1; % switching function for min energy case (m is already nondim)
     %fprintf("S = %d\n",S);
 
     if S < -1
