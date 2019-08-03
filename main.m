@@ -12,7 +12,10 @@ set(groot, 'defaultLegendInterpreter','latex');
 p = gcp;
 
 %% Load (setup)
-load('environment_EM_spacecraft_smallsat.mat');
+%load('environment_EM_spacecraft_smallsat.mat');
+load('environment_EM_spacecraft_cubesat.mat');
+load('initial_state_lyap_trans.mat');
+load('target_state_lyap_trans.mat');
 
 %%
 
@@ -23,9 +26,15 @@ ode_opts = odeset('RelTol',1e-13,'AbsTol',1e-20);
 load('ref_connection.mat');
 fprintf('Reference trajectory loaded.\n');
 
+X0 = connection_result.X0;
+tof = connection_result.traj{1}(end);
+
+X0 = initial_state(1:6);
+tof = 5.4881;
+
 %% Get ref traj with lots of points
 tic
-[t_ref,X_ref_hist] = ode113(@(t,X) CR3BP(t,X,mu_EM), linspace(0,connection_result.traj{1}(end),10000), connection_result.X0, ode_opts);
+[t_ref,X_ref_hist] = ode113(@(t,X) CR3BP(t,X,mu_EM), linspace(0,tof,10000), X0, ode_opts);
 toc
 
 ref_traj = {t_ref, X_ref_hist};
@@ -50,28 +59,35 @@ ref_traj = {t_ref, X_ref_hist};
 %% 
 
 % From plot, pick start and end states
-index_start = 660;
-%index_start = 853;
-index_end = 1160;
+% index_start = 660;
+% %index_start = 853;
+% index_end = 1160;
+% 
+% % index_start = 1;
+% % index_end = length(connection_result.traj{1});
+% 
+% rng(50);
+% 
+% X0 = connection_result.traj{2}(:,index_start) + [normrnd(0,1.3e-6,[2,1]);0;normrnd(0,10e-4,[2,1]);0];
+% %X0 = connection_result.traj{2}(:,index_start) + [normrnd(0,1e-5,[2,1]);0;normrnd(0,1e-5,[2,1]);0];
+% t0 = connection_result.traj{1}(index_start);
+% Xf = connection_result.traj{2}(:,index_end);
+% tf = connection_result.traj{1}(index_end);
+% 
+% tfmin0 = tf-t0;
+% cf_guess = 1;
 
-% index_start = 1;
-% index_end = length(connection_result.traj{1});
+%% Same as DDP EM transfer
 
-rng(50);
-
-X0 = connection_result.traj{2}(:,index_start) + [normrnd(0,1.3e-6,[2,1]);0;normrnd(0,10e-4,[2,1]);0];
-%X0 = connection_result.traj{2}(:,index_start) + [normrnd(0,1e-5,[2,1]);0;normrnd(0,1e-5,[2,1]);0];
-t0 = connection_result.traj{1}(index_start);
-Xf = connection_result.traj{2}(:,index_end);
-tf = connection_result.traj{1}(index_end);
-
-tfmin0 = tf-t0;
+tfmin0 = tof;
 cf_guess = 1;
+Xf = X0_arr_guess(1:6);
+t0 = 0;
+tf = tof;
 
 %% Plot reference trajectory (from index_start to index_end)
 
 figure
-addToolbarExplorationButtons(gcf)
 addToolbarExplorationButtons(gcf) % Adds buttons to figure toolbar
 plot(1-mu_EM, 0, 'ok', 'markerfacecolor', 'm', 'markersize', 8, 'DisplayName', 'Moon'); hold on % Moon
 plot(x_L1, 0, 'dk', 'markerfacecolor', 'r', 'DisplayName', 'L1 Point'); hold on % L1 location
@@ -85,6 +101,24 @@ ylabel('Y')
 axis('equal')
 grid on;
 legend('FontSize',12);
+
+%% Plot DDP ref traj
+
+figure
+addToolbarExplorationButtons(gcf)
+plot(1-mu_EM, 0, 'ok', 'markerfacecolor', 'm', 'markersize', 8, 'DisplayName', 'Moon'); hold on % Moon
+plot(x_L1, 0, 'dk', 'markerfacecolor', 'r', 'DisplayName', 'L1 Point'); hold on % L1 location
+plot(x_L2, 0, 'dk' , 'markerfacecolor', 'b', 'DisplayName', 'L2 Point'); hold on % L2 location
+plot(ref_traj{2}(1,1), ref_traj{2}(1,2), 'ok', 'markerfacecolor', 'y', 'DisplayName', 'Initial Point'); hold on
+plot(ref_traj{2}(:,1), ref_traj{2}(:,2), 'r-','DisplayName', 'Reference Trajectory (Heteroclinic Connection)'); hold on
+plot(Xf(1), Xf(2), 'ok', 'markerfacecolor', 'r', 'DisplayName', 'Target Point'); hold on
+title('Reference Trajectory','FontSize',14)
+xlabel('X')
+ylabel('Y')
+axis('equal')
+grid on;
+legend('FontSize',12);
+
 %%
 
 % Get initial guess for costates from linear problem (fixed-endpoint LQR)
@@ -92,12 +126,16 @@ legend('FontSize',12);
 l = 6; % number of states
 R = 2*eye(3);
 A_func = @(X) Jacobian(X,mu_EM); % A matrix depends on state (time varying)
-B = [zeros(3,3); 47*max_thrust_mag/m_sc*eye(3)]; %dfdu
+%B = [zeros(3,3); 47*max_thrust_mag/m_sc*eye(3)]; %dfdu %works for original
+%scenario
+B = [zeros(3,3); 500*max_thrust_mag/m_sc*eye(3)];
 augSTM_0 = eye(12,12);
 
 X_ref = X0;
 Xlarge0 = [X_ref; reshape(augSTM_0,[],1)];
-deltaX0 = X_ref - connection_result.traj{2}(:,index_start);
+%deltaX0 = X_ref - connection_result.traj{2}(:,index_start); % for original
+%scenario
+deltaX0 = X_ref - X0;
 
 %ode_opts = odeset('RelTol',3e-14,'AbsTol',1e-22);
 %[~, Xlarge_loop_hist] = ode113(@(t,Xlarge) CR3BP_costate_STM_dynamics(t,Xlarge,B,R,mu_EM), [t0, t0+cf_guess*tfmin0], Xlarge0, ode_opts);
@@ -147,8 +185,9 @@ hold off
 
 cfr = 1;
 %cfr = 0.9305;
-tfmin = tf-t0;
-tf0 = tf-t0;
+% tfmin = tf-t0;
+% tf0 = tf-t0;
+tfmin = tof;
 lambda_i = lambda0;
 free_vars = lambda_i;
 
@@ -326,9 +365,9 @@ legend('FontSize',12)
 
 max_thrust_used = FU*1e6*max(Tmax.*final_control_results.u_hist); % [mN]
 total_deltav = trapz(TU.*t_opt_pass2,AU*Tmax/m_sc.*final_control_results.u_hist); % [m/s]
-fuel_used = MU*(m_sc - X_opt_pass2(end,7)); % [g]
+fuel_used = MU*(m_sc - X_opt_pass2(end,7)); % [kg]
 final_mass = MU*X_opt_pass2(end,7); % [kg]
 fprintf("Max Thrust Used: %d mN\n",max_thrust_used);
 fprintf("Total Delta V: %d m/s\n",total_deltav);
-fprintf("Fuel Mass Used: %d g\n",fuel_used);
+fprintf("Fuel Mass Used: %d kg\n",fuel_used);
 fprintf("Spacecraft Final mass: %d kg\n",final_mass);
